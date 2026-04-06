@@ -32,23 +32,24 @@ function onAuthChange(authed) {
 }
 
 async function loadInitialData() {
-  state.loading = true; render();
+  state.loading = true; state._loadError = null; render();
   try {
-    const profile = await YT_API.getMyChannel();
+    var profile = await YT_API.getMyChannel();
     state.userProfile = profile;
   } catch (e) {
-    console.error('[APP] Token invalid:', e);
-    state.loading = false; AUTH.signOut(); return;
+    // Don't sign out immediately — show the error
+    state.loading = false;
+    state._loadError = 'Profile load failed: ' + (e.message || String(e));
+    render();
+    return;
   }
   try {
-    const [subs, pls] = await Promise.all([YT_API.getAllSubscriptions(), YT_API.getPlaylists()]);
-    state.subscriptions = subs;
-    state.playlists = pls;
-    // Load feed for selected channels (or all if none selected)
+    var results = await Promise.all([YT_API.getAllSubscriptions(), YT_API.getPlaylists()]);
+    state.subscriptions = results[0];
+    state.playlists = results[1];
     await loadFeedVideos();
   } catch (e) {
-    console.error('[APP] Data load error:', e);
-    if (isAuthError(e)) { state.loading = false; AUTH.signOut(); return; }
+    state._loadError = 'Data load failed: ' + (e.message || String(e));
     showToast('Some data failed to load.');
   }
   state.loading = false; render();
@@ -323,19 +324,31 @@ const LOGO = `<svg viewBox="0 0 380 85" width="116" height="26" style="display:b
 
 // ── Render ──
 function render() {
-  const app = $('#app');
+  var app = $('#app');
   if (!state.authed) { app.innerHTML = renderSignIn(); return; }
+
+  // Show error if data loading failed
+  if (state._loadError && !state.loading) {
+    app.innerHTML = '<div style="padding:40px 20px;text-align:center;font-family:Roboto,sans-serif">' +
+      '<h2 style="color:var(--red);margin-bottom:12px">Data Load Error</h2>' +
+      '<p style="color:var(--dim);font-size:14px;margin-bottom:16px;word-break:break-all">' + esc(state._loadError) + '</p>' +
+      '<button class="btn btn-confirm" onclick="state._loadError=null;loadInitialData()">Retry</button>' +
+      '<button class="btn btn-cancel" style="margin-left:8px" data-action="signout">Sign Out</button>' +
+      '</div>';
+    return;
+  }
+
   if (state.player) { app.innerHTML = renderPlayer(); return; }
   if (state.viewingPlaylist) { app.innerHTML = renderPlaylistView(); return; }
   if (state.browsingChannel) { app.innerHTML = renderChannelBrowse(); return; }
 
-  let h = renderTopBar();
+  var h = renderTopBar();
   if (state.tab === 'feed') h += renderFeed();
   else if (state.tab === 'subs') h += renderSubs();
   else if (state.tab === 'account') h += renderAccount();
   else if (state.tab === 'settings') h += renderSettings();
   h += renderNav();
-  if (state.toast) h += `<div class="toast">${esc(state.toast)}</div>`;
+  if (state.toast) h += '<div class="toast">' + esc(state.toast) + '</div>';
   app.innerHTML = h;
 }
 
