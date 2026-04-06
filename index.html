@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="YouTube">
+  <meta name="theme-color" content="#0f0f0f">
+  <title>YouTube Focus</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <div class="signin-screen">
+      <div class="loading"><div class="spinner"></div> Loading...</div>
+    </div>
+  </div>
+
+  <script>
+    window.onerror = function(msg, src, line, col, err) {
+      var el = document.getElementById('app');
+      if (el) {
+        el.innerHTML = '<div style="padding:40px 20px;text-align:center;color:#f1f1f1;font-family:Roboto,Arial,sans-serif">' +
+          '<h2 style="color:#FF0000;margin-bottom:12px">Error</h2>' +
+          '<p style="color:#aaa;font-size:14px;margin-bottom:8px">' + msg + '</p>' +
+          '<p style="color:#717171;font-size:12px;font-family:monospace">' + (src || '') + ':' + (line || '') + '</p>' +
+          '<button onclick="location.reload()" style="margin-top:20px;padding:10px 24px;border-radius:8px;background:#FF0000;color:#fff;border:none;font-size:14px;cursor:pointer">Reload</button>' +
+          '</div>';
+      }
+    };
+  </script>
+
+  <script src="config.js"></script>
+  <script>
+    if (typeof CONFIG === 'undefined') {
+      document.getElementById('app').innerHTML = '<div style="padding:40px;text-align:center;color:#FF0000;font-family:sans-serif"><h2>config.js failed to load</h2></div>';
+      throw new Error('CONFIG missing');
+    }
+    if (CONFIG.CLIENT_ID === 'YOUR_CLIENT_ID_HERE') {
+      document.getElementById('app').innerHTML = '<div style="padding:40px;text-align:center;color:#FF0000;font-family:sans-serif"><h2>Setup Required</h2><p style="color:#aaa;margin-top:8px">Set CLIENT_ID in config.js</p></div>';
+      throw new Error('CLIENT_ID not set');
+    }
+  </script>
+
+  <script src="api.js"></script>
+  <script src="auth.js"></script>
+  <script src="app.js"></script>
+
+  <script>
+    // Clear old service workers and caches
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function(regs) {
+        return Promise.all(regs.map(function(r) { return r.unregister(); }));
+      }).then(function() {
+        return caches.keys();
+      }).then(function(keys) {
+        return Promise.all(keys.map(function(k) { return caches.delete(k); }));
+      }).then(function() {
+        navigator.serviceWorker.register('./sw.js');
+      }).catch(function() {});
+    }
+  </script>
+</body>
+</html>
