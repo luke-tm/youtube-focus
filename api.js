@@ -1,205 +1,301 @@
 // ============================================================
-// YouTube Focus v3 — API Module
+// YouTube Focus v4 — API Module (Quota-Optimized)
+// ============================================================
+// Key optimization: uses playlistItems.list (1 unit/call) instead
+// of search.list (100 units/call) for fetching channel videos.
+// Each YouTube channel has an "uploads" playlist with ID = 'UU' + channelId.substring(2)
 // ============================================================
 
-const YT_API = {
+var YT_API = {
   _token: null,
   _cache: new Map(),
 
-  setToken(t) { this._token = t; },
+  setToken: function(t) { this._token = t; },
 
-  _cacheKey(ep, p) { return ep + '?' + new URLSearchParams(p).toString(); },
+  _cacheKey: function(ep, p) { return ep + '?' + new URLSearchParams(p).toString(); },
 
-  _getCache(key) {
-    const e = this._cache.get(key);
+  _getCache: function(key) {
+    var e = this._cache.get(key);
     if (!e) return null;
     if (Date.now() - e.time > CONFIG.CACHE_DURATION_MINUTES * 60000) { this._cache.delete(key); return null; }
     return e.data;
   },
 
-  async _fetch(endpoint, params = {}, method = 'GET', body = null) {
+  _fetch: async function(endpoint, params, method, body) {
+    if (!method) method = 'GET';
+    if (!params) params = {};
     if (!this._token) throw new Error('Not authenticated');
-    const url = new URL(CONFIG.API_BASE + '/' + endpoint);
-    if (method === 'GET') Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+    var url = new URL(CONFIG.API_BASE + '/' + endpoint);
+    if (method === 'GET') {
+      var keys = Object.keys(params);
+      for (var i = 0; i < keys.length; i++) url.searchParams.set(keys[i], params[keys[i]]);
+    }
 
-    const opts = { method, headers: { 'Authorization': 'Bearer ' + this._token, 'Accept': 'application/json' } };
+    var opts = { method: method, headers: { 'Authorization': 'Bearer ' + this._token, 'Accept': 'application/json' } };
     if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
 
     if (method === 'GET') {
-      const ck = this._cacheKey(endpoint, params);
-      const cached = this._getCache(ck);
+      var ck = this._cacheKey(endpoint, params);
+      var cached = this._getCache(ck);
       if (cached) return cached;
     }
 
-    const resp = await fetch(url.toString(), opts);
+    var resp = await fetch(url.toString(), opts);
     if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err?.error?.message || 'API error: ' + resp.status);
+      var err = await resp.json().catch(function() { return {}; });
+      throw new Error((err && err.error && err.error.message) || 'API error: ' + resp.status);
     }
 
-    const data = method === 'DELETE' ? null : await resp.json();
-    if (method === 'GET' && data) this._cache.set(this._cacheKey(endpoint, params), { data, time: Date.now() });
+    var data = method === 'DELETE' ? null : await resp.json();
+    if (method === 'GET' && data) this._cache.set(this._cacheKey(endpoint, params), { data: data, time: Date.now() });
     return data;
   },
 
-  // ── Subscriptions ──
-  async getSubscriptions(pageToken) {
-    const p = { part: 'snippet', mine: 'true', maxResults: CONFIG.SUBS_PAGE_SIZE, order: 'alphabetical' };
-    if (pageToken) p.pageToken = pageToken;
-    return this._fetch('subscriptions', p);
-  },
+  // ── Subscriptions (cached to localStorage) ──
+  // Cost: ~4 calls for 200 subs = 4 units
+  getAllSubscriptions: async function() {
+    // Check localStorage cache first (valid for 6 hours)
+    try {
+      var cached = JSON.parse(localStorage.getItem('yt_subs_cache') || 'null');
+      if (cached && cached.time && Date.now() - cached.time < 6 * 3600000) {
+        return cached.data;
+      }
+    } catch(e) {}
 
-  async getAllSubscriptions() {
-    const all = []; let pt = null;
+    var all = [], pt = null;
     do {
-      const r = await this.getSubscriptions(pt);
-      all.push(...r.items.map(i => ({
-        id: i.snippet.resourceId.channelId,
-        name: i.snippet.title,
-        thumbnail: i.snippet.thumbnails?.default?.url || '',
-      })));
+      var p = { part: 'snippet', mine: 'true', maxResults: '50', order: 'alphabetical' };
+      if (pt) p.pageToken = pt;
+      var r = await this._fetch('subscriptions', p);
+      for (var i = 0; i < r.items.length; i++) {
+        var item = r.items[i];
+        var chId = item.snippet.resourceId.channelId;
+        all.push({
+          id: chId,
+          name: item.snippet.title,
+          thumbnail: (item.snippet.thumbnails && item.snippet.thumbnails.default && item.snippet.thumbnails.default.url) || '',
+          // Uploads playlist ID = replace 'UC' prefix with 'UU'
+          uploadsPlaylistId: 'UU' + chId.substring(2),
+        });
+      }
       pt = r.nextPageToken || null;
     } while (pt);
+
+    // Cache to localStorage
+    try {
+      localStorage.setItem('yt_subs_cache', JSON.stringify({ data: all, time: Date.now() }));
+    } catch(e) {}
+
     return all;
   },
 
-  // ── Channel Videos ──
-  async getChannelVideos(channelId, maxResults = CONFIG.VIDEOS_PER_CHANNEL) {
-    const r = await this._fetch('search', {
-      part: 'snippet', channelId, maxResults: String(maxResults + 10), order: 'date', type: 'video',
+  // ── Channel Videos via Uploads Playlist ──
+  // Cost: 1 unit per call (vs 100 for search.list!)
+  getChannelVideos: async function(channel, maxResults) {
+    if (!maxResults) maxResults = CONFIG.VIDEOS_PER_CHANNEL;
+    var playlistId = channel.uploadsPlaylistId || ('UU' + channel.id.substring(2));
+
+    var r = await this._fetch('playlistItems', {
+      part: 'snippet,contentDetails',
+      playlistId: playlistId,
+      maxResults: String(maxResults + 5) // extra to filter shorts
     });
-    const ids = r.items.map(i => i.id.videoId).filter(Boolean).join(',');
-    if (!ids) return [];
-    const d = await this._fetch('videos', { part: 'contentDetails,statistics,snippet', id: ids });
-    return d.items
-      .filter(v => parseDuration(v.contentDetails.duration) > 60)
-      .slice(0, maxResults)
-      .map(v => ({
-        id: v.id, title: v.snippet.title, channel: v.snippet.channelTitle,
-        channelId: v.snippet.channelId,
-        thumbnail: v.snippet.thumbnails?.medium?.url || v.snippet.thumbnails?.default?.url || '',
-        thumbnailHigh: v.snippet.thumbnails?.high?.url || '',
-        publishedAt: v.snippet.publishedAt,
-        duration: formatDuration(v.contentDetails.duration),
-        views: v.statistics?.viewCount || '0',
-        likes: parseInt(v.statistics?.likeCount || '0', 10),
-        commentCount: parseInt(v.statistics?.commentCount || '0', 10),
-        description: v.snippet.description,
-      }));
-  },
 
-  async getChannelAllVideos(channelId, pageToken = null) {
-    const p = { part: 'snippet', channelId, maxResults: '20', order: 'date', type: 'video' };
-    if (pageToken) p.pageToken = pageToken;
-    const r = await this._fetch('search', p);
-    const ids = r.items.map(i => i.id.videoId).filter(Boolean).join(',');
-    if (!ids) return { videos: [], nextPageToken: null };
-    const d = await this._fetch('videos', { part: 'contentDetails,statistics,snippet', id: ids });
-    return {
-      videos: d.items.filter(v => parseDuration(v.contentDetails.duration) > 60).map(v => ({
-        id: v.id, title: v.snippet.title, channel: v.snippet.channelTitle,
-        channelId: v.snippet.channelId,
-        thumbnail: v.snippet.thumbnails?.medium?.url || '',
-        publishedAt: v.snippet.publishedAt,
-        duration: formatDuration(v.contentDetails.duration),
-        views: v.statistics?.viewCount || '0',
-        likes: parseInt(v.statistics?.likeCount || '0', 10),
-        commentCount: parseInt(v.statistics?.commentCount || '0', 10),
-      })),
-      nextPageToken: r.nextPageToken || null,
-    };
-  },
+    if (!r.items || !r.items.length) return [];
 
-  // ── Feed ──
-  async getFeed(subscriptions) {
-    const all = [];
-    const batch = 5;
-    for (let i = 0; i < subscriptions.length; i += batch) {
-      const b = subscriptions.slice(i, i + batch);
-      const results = await Promise.allSettled(b.map(ch => this.getChannelVideos(ch.id, CONFIG.VIDEOS_PER_CHANNEL)));
-      results.forEach(r => { if (r.status === 'fulfilled') all.push(...r.value); });
+    // Get video details for duration + stats (1 unit, batched)
+    var videoIds = [];
+    for (var i = 0; i < r.items.length; i++) {
+      if (r.items[i].contentDetails && r.items[i].contentDetails.videoId) {
+        videoIds.push(r.items[i].contentDetails.videoId);
+      }
     }
-    all.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
+    if (!videoIds.length) return [];
+
+    var d = await this._fetch('videos', {
+      part: 'contentDetails,statistics,snippet',
+      id: videoIds.join(',')
+    });
+
+    var results = [];
+    for (var j = 0; j < d.items.length; j++) {
+      var v = d.items[j];
+      var seconds = parseDuration(v.contentDetails.duration);
+      if (seconds <= 60) continue; // Filter shorts
+      if (results.length >= maxResults) break;
+      results.push({
+        id: v.id,
+        title: v.snippet.title,
+        channel: v.snippet.channelTitle,
+        channelId: v.snippet.channelId,
+        thumbnail: (v.snippet.thumbnails && v.snippet.thumbnails.medium && v.snippet.thumbnails.medium.url) || '',
+        thumbnailHigh: (v.snippet.thumbnails && v.snippet.thumbnails.high && v.snippet.thumbnails.high.url) || '',
+        publishedAt: v.snippet.publishedAt,
+        duration: formatDuration(v.contentDetails.duration),
+        views: (v.statistics && v.statistics.viewCount) || '0',
+        likes: parseInt((v.statistics && v.statistics.likeCount) || '0', 10),
+        commentCount: parseInt((v.statistics && v.statistics.commentCount) || '0', 10),
+      });
+    }
+    return results;
+  },
+
+  // ── Browse all videos from a channel (paginated) ──
+  // Cost: 2 units per page (playlistItems + videos)
+  getChannelAllVideos: async function(channelId, pageToken) {
+    var playlistId = 'UU' + channelId.substring(2);
+    var p = { part: 'snippet,contentDetails', playlistId: playlistId, maxResults: '20' };
+    if (pageToken) p.pageToken = pageToken;
+
+    var r = await this._fetch('playlistItems', p);
+    var videoIds = [];
+    for (var i = 0; i < r.items.length; i++) {
+      if (r.items[i].contentDetails && r.items[i].contentDetails.videoId) {
+        videoIds.push(r.items[i].contentDetails.videoId);
+      }
+    }
+    if (!videoIds.length) return { videos: [], nextPageToken: null };
+
+    var d = await this._fetch('videos', { part: 'contentDetails,statistics,snippet', id: videoIds.join(',') });
+    var videos = [];
+    for (var j = 0; j < d.items.length; j++) {
+      var v = d.items[j];
+      if (parseDuration(v.contentDetails.duration) <= 60) continue;
+      videos.push({
+        id: v.id, title: v.snippet.title, channel: v.snippet.channelTitle,
+        channelId: v.snippet.channelId,
+        thumbnail: (v.snippet.thumbnails && v.snippet.thumbnails.medium && v.snippet.thumbnails.medium.url) || '',
+        publishedAt: v.snippet.publishedAt,
+        duration: formatDuration(v.contentDetails.duration),
+        views: (v.statistics && v.statistics.viewCount) || '0',
+        likes: parseInt((v.statistics && v.statistics.likeCount) || '0', 10),
+        commentCount: parseInt((v.statistics && v.statistics.commentCount) || '0', 10),
+      });
+    }
+    return { videos: videos, nextPageToken: r.nextPageToken || null };
+  },
+
+  // ── Feed (only selected channels) ──
+  // Cost: ~2 units per channel (playlistItems + videos batch)
+  getFeed: async function(channels) {
+    var all = [];
+    var batchSize = 5;
+    for (var i = 0; i < channels.length; i += batchSize) {
+      var batch = channels.slice(i, i + batchSize);
+      var results = await Promise.allSettled(
+        batch.map(function(ch) { return YT_API.getChannelVideos(ch, CONFIG.VIDEOS_PER_CHANNEL); })
+      );
+      for (var j = 0; j < results.length; j++) {
+        if (results[j].status === 'fulfilled' && results[j].value) {
+          all = all.concat(results[j].value);
+        }
+      }
+    }
+    all.sort(function(a, b) { return new Date(b.publishedAt) - new Date(a.publishedAt); });
     return all;
   },
 
-  // ── Ratings ──
-  async rateVideo(videoId, rating) { await this._fetch('videos/rate', { id: videoId, rating }, 'POST'); },
-  async getRating(videoId) { const r = await this._fetch('videos/getRating', { id: videoId }); return r.items?.[0]?.rating || 'none'; },
+  // ── Ratings ── (1 unit each)
+  rateVideo: async function(videoId, rating) {
+    await this._fetch('videos/rate', { id: videoId, rating: rating }, 'POST');
+  },
+  getRating: async function(videoId) {
+    var r = await this._fetch('videos/getRating', { id: videoId });
+    return (r.items && r.items[0] && r.items[0].rating) || 'none';
+  },
 
-  // ── Comments ──
-  async getComments(videoId, pageToken) {
-    const p = { part: 'snippet', videoId, maxResults: String(CONFIG.COMMENTS_PAGE_SIZE), order: 'relevance', textFormat: 'plainText' };
+  // ── Comments ── (1 unit each)
+  getComments: async function(videoId, pageToken) {
+    var p = { part: 'snippet', videoId: videoId, maxResults: String(CONFIG.COMMENTS_PAGE_SIZE), order: 'relevance', textFormat: 'plainText' };
     if (pageToken) p.pageToken = pageToken;
     try {
-      const r = await this._fetch('commentThreads', p);
-      return {
-        comments: r.items.map(i => { const s = i.snippet.topLevelComment.snippet; return { id: i.id, author: s.authorDisplayName, authorImage: s.authorProfileImageUrl, text: s.textDisplay, likes: s.likeCount, publishedAt: s.publishedAt, isOwn: false }; }),
-        nextPageToken: r.nextPageToken || null,
-      };
+      var r = await this._fetch('commentThreads', p);
+      var comments = [];
+      for (var i = 0; i < r.items.length; i++) {
+        var s = r.items[i].snippet.topLevelComment.snippet;
+        comments.push({ id: r.items[i].id, author: s.authorDisplayName, authorImage: s.authorProfileImageUrl, text: s.textDisplay, likes: s.likeCount, publishedAt: s.publishedAt, isOwn: false });
+      }
+      return { comments: comments, nextPageToken: r.nextPageToken || null };
     } catch (e) { return { comments: [], nextPageToken: null }; }
   },
 
-  async postComment(videoId, text) {
-    const r = await this._fetch('commentThreads', { part: 'snippet' }, 'POST', { snippet: { videoId, topLevelComment: { snippet: { textOriginal: text } } } });
-    const s = r.snippet.topLevelComment.snippet;
+  postComment: async function(videoId, text) {
+    var r = await this._fetch('commentThreads', { part: 'snippet' }, 'POST', { snippet: { videoId: videoId, topLevelComment: { snippet: { textOriginal: text } } } });
+    var s = r.snippet.topLevelComment.snippet;
     return { id: r.id, author: s.authorDisplayName, authorImage: s.authorProfileImageUrl, text: s.textDisplay, likes: 0, publishedAt: s.publishedAt, isOwn: true };
   },
 
-  // ── Playlists ──
-  async getPlaylists() {
-    const r = await this._fetch('playlists', { part: 'snippet,contentDetails', mine: 'true', maxResults: '50' });
-    return r.items.map(p => ({ id: p.id, title: p.snippet.title, itemCount: p.contentDetails.itemCount, thumbnail: p.snippet.thumbnails?.medium?.url || '' }));
+  // ── Playlists ── (1 unit)
+  getPlaylists: async function() {
+    var r = await this._fetch('playlists', { part: 'snippet,contentDetails', mine: 'true', maxResults: '50' });
+    var out = [];
+    for (var i = 0; i < r.items.length; i++) {
+      var p = r.items[i];
+      out.push({ id: p.id, title: p.snippet.title, itemCount: p.contentDetails.itemCount, thumbnail: (p.snippet.thumbnails && p.snippet.thumbnails.medium && p.snippet.thumbnails.medium.url) || '' });
+    }
+    return out;
   },
 
-  async getPlaylistItems(playlistId, pageToken) {
-    const p = { part: 'snippet,contentDetails', playlistId, maxResults: '50' };
+  getPlaylistItems: async function(playlistId, pageToken) {
+    var p = { part: 'snippet,contentDetails', playlistId: playlistId, maxResults: '50' };
     if (pageToken) p.pageToken = pageToken;
-    const r = await this._fetch('playlistItems', p);
-    return { items: r.items.map(i => ({ id: i.id, videoId: i.contentDetails.videoId, title: i.snippet.title, channel: i.snippet.videoOwnerChannelTitle, thumbnail: i.snippet.thumbnails?.medium?.url || '', publishedAt: i.snippet.publishedAt })), nextPageToken: r.nextPageToken || null };
+    var r = await this._fetch('playlistItems', p);
+    var items = [];
+    for (var i = 0; i < r.items.length; i++) {
+      var it = r.items[i];
+      items.push({ id: it.id, videoId: it.contentDetails.videoId, title: it.snippet.title, channel: it.snippet.videoOwnerChannelTitle || '', thumbnail: (it.snippet.thumbnails && it.snippet.thumbnails.medium && it.snippet.thumbnails.medium.url) || '', publishedAt: it.snippet.publishedAt });
+    }
+    return { items: items, nextPageToken: r.nextPageToken || null };
   },
 
-  async addToPlaylist(playlistId, videoId) {
-    return this._fetch('playlistItems', { part: 'snippet' }, 'POST', { snippet: { playlistId, resourceId: { kind: 'youtube#video', videoId } } });
+  addToPlaylist: async function(playlistId, videoId) {
+    return this._fetch('playlistItems', { part: 'snippet' }, 'POST', { snippet: { playlistId: playlistId, resourceId: { kind: 'youtube#video', videoId: videoId } } });
   },
 
-  async createPlaylist(title) {
-    const r = await this._fetch('playlists', { part: 'snippet,status' }, 'POST', { snippet: { title }, status: { privacyStatus: 'private' } });
+  createPlaylist: async function(title) {
+    var r = await this._fetch('playlists', { part: 'snippet,status' }, 'POST', { snippet: { title: title }, status: { privacyStatus: 'private' } });
     return { id: r.id, title: r.snippet.title, itemCount: 0 };
   },
 
-  // ── User ──
-  async getMyChannel() {
-    const r = await this._fetch('channels', { part: 'snippet,statistics', mine: 'true' });
-    if (!r.items?.length) return null;
-    const ch = r.items[0];
-    return { id: ch.id, name: ch.snippet.title, thumbnail: ch.snippet.thumbnails?.default?.url || '' };
+  // ── User ── (1 unit)
+  getMyChannel: async function() {
+    var r = await this._fetch('channels', { part: 'snippet', mine: 'true' });
+    if (!r.items || !r.items.length) return null;
+    var ch = r.items[0];
+    return { id: ch.id, name: ch.snippet.title, thumbnail: (ch.snippet.thumbnails && ch.snippet.thumbnails.default && ch.snippet.thumbnails.default.url) || '' };
   },
 
-  clearCache() { this._cache.clear(); },
+  clearCache: function() { this._cache.clear(); },
+
+  clearSubsCache: function() {
+    localStorage.removeItem('yt_subs_cache');
+  }
 };
 
 function parseDuration(iso) {
-  const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  var m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
   if (!m) return 0;
   return (parseInt(m[1]||0)*3600)+(parseInt(m[2]||0)*60)+parseInt(m[3]||0);
 }
 
 function formatDuration(iso) {
-  const t = parseDuration(iso), h = Math.floor(t/3600), m = Math.floor((t%3600)/60), s = t%60;
-  return h > 0 ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}` : `${m}:${String(s).padStart(2,'0')}`;
+  var t = parseDuration(iso), h = Math.floor(t/3600), m = Math.floor((t%3600)/60), s = t%60;
+  return h > 0 ? h+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0') : m+':'+String(s).padStart(2,'0');
 }
 
 function timeAgo(d) {
-  const diff = Date.now() - new Date(d).getTime(), mins = Math.floor(diff/60000);
-  if (mins < 60) return mins + 'm ago'; const hrs = Math.floor(mins/60);
-  if (hrs < 24) return hrs + 'h ago'; const days = Math.floor(hrs/24);
-  if (days < 30) return days + 'd ago'; const mo = Math.floor(days/30);
+  var diff = Date.now() - new Date(d).getTime(), mins = Math.floor(diff/60000);
+  if (mins < 60) return mins + 'm ago';
+  var hrs = Math.floor(mins/60);
+  if (hrs < 24) return hrs + 'h ago';
+  var days = Math.floor(hrs/24);
+  if (days < 30) return days + 'd ago';
+  var mo = Math.floor(days/30);
   return mo < 12 ? mo + 'mo ago' : Math.floor(mo/12) + 'y ago';
 }
 
 function formatViewCount(n) {
-  const num = parseInt(n, 10);
+  var num = parseInt(n, 10);
   if (num >= 1e6) return (num/1e6).toFixed(1)+'M';
   if (num >= 1e3) return (num/1e3).toFixed(num >= 1e4 ? 0 : 1)+'K';
   return String(num);
