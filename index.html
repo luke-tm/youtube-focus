@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -35,7 +36,8 @@
     };
   </script>
 
-  <script src="config.js"></script>
+  <script src="config.js?v=4"></script>
+
   <script>
     if (typeof CONFIG === 'undefined') {
       document.getElementById('app').innerHTML = '<div style="padding:40px;text-align:center;color:#FF0000;font-family:sans-serif"><h2>config.js failed to load</h2></div>';
@@ -45,11 +47,14 @@
       document.getElementById('app').innerHTML = '<div style="padding:40px;text-align:center;color:#FF0000;font-family:sans-serif"><h2>Setup Required</h2><p style="color:#aaa;margin-top:8px">Set CLIENT_ID in config.js</p></div>';
       throw new Error('CLIENT_ID not set');
     }
+    window.YT_FOCUS_VERSION = 'v4.0';
   </script>
 
-  <script src="api.js"></script>
-  <script src="auth.js"></script>
-  <script src="app.js"></script>
+  <script src="api.js?v=4"></script>
+
+  <script src="auth.js?v=4"></script>
+
+  <script src="app.js?v=4"></script>
 
   <script>
     // Clear old service workers and caches
@@ -65,5 +70,6 @@
       }).catch(function() {});
     }
   </script>
+
 </body>
 </html>
