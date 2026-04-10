@@ -9,7 +9,7 @@
 
 var CONFIG = {
   CLIENT_ID: '83656850398-etlb0jelnhmk5bok4gt7oqr6lkr38f4u.apps.googleusercontent.com',
-  REDIRECT_URI: 'https://luke-tm.github.io/youtube-focus/index.html',
+REDIRECT_URI: 'https://luke-tm.github.io/youtube-focus/',
   API_BASE: 'https://www.googleapis.com/youtube/v3',
   SCOPES: 'https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtube.force-ssl',
   SUBS_PAGE_SIZE: 50,
