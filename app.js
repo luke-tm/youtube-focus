@@ -161,6 +161,15 @@ function bindEvents() {
     if (e.target.id === 'customSpeedInput' && e.key === 'Enter') { e.target.blur(); applyCustomSpeed(); }
     if (e.target.id === 'commentInput' && e.key === 'Enter') postComment();
   });
+  // Track PiP state changes driven by the YouTube player's native PiP button
+  document.addEventListener('enterpictureinpicture', function() {
+    state.pip = true;
+    updateToggle('pipToggle', true);
+  });
+  document.addEventListener('leavepictureinpicture', function() {
+    state.pip = false;
+    updateToggle('pipToggle', false);
+  });
 }
 
 // -- Player --
@@ -225,18 +234,66 @@ function sendPlayerCommand(func, args) {
 }
 
 function requestPiP() {
-  // Try to access the video element in the iframe for PiP
-  // Safari supports PiP via the YouTube player's built-in button
-  // For programmatic PiP, we need the video element
-  var iframe = document.querySelector('.player-embed iframe');
-  if (iframe) {
-    try {
-      // Safari experimental: documentPictureInPicture or video element
-      showToast('Tap the PiP button in the YouTube player (bottom-right of video)');
-    } catch(e) {}
+  var iframe = document.getElementById('ytplayer');
+  if (!iframe) { showToast('No video playing'); return; }
+
+  // Exit PiP if already active
+  if (document.pictureInPictureElement) {
+    document.exitPictureInPicture().catch(function() {});
+    return;
   }
-  state.pip = !state.pip;
-  updateToggle('pipToggle', state.pip);
+
+  // Attempt 1: Standard requestPictureInPicture on the iframe itself
+  // (some browsers allow this when allow="picture-in-picture" is set)
+  if (typeof iframe.requestPictureInPicture === 'function') {
+    iframe.requestPictureInPicture()
+      .then(function() { state.pip = true; updateToggle('pipToggle', true); })
+      .catch(function() { _pipFallback(iframe); });
+    return;
+  }
+
+  _pipFallback(iframe);
+}
+
+function _pipFallback(iframe) {
+  // Attempt 2: Access the <video> element inside the iframe.
+  // On iOS Safari the YouTube embed runs same-process, so this occasionally
+  // succeeds; on most browsers CORS will block it — the catch handles that.
+  try {
+    var doc = iframe.contentDocument ||
+              (iframe.contentWindow && iframe.contentWindow.document);
+    if (doc) {
+      var video = doc.querySelector('video');
+      if (video) {
+        // iOS 14+ webkit API
+        if (video.webkitSupportsPresentationMode &&
+            video.webkitSupportsPresentationMode('picture-in-picture')) {
+          video.webkitSetPresentationMode('picture-in-picture');
+          state.pip = true;
+          updateToggle('pipToggle', true);
+          return;
+        }
+        // Standard API on the video element
+        if (typeof video.requestPictureInPicture === 'function') {
+          video.requestPictureInPicture()
+            .then(function() { state.pip = true; updateToggle('pipToggle', true); })
+            .catch(function() { _pipGuide(); });
+          return;
+        }
+      }
+    }
+  } catch(e) {}
+
+  _pipGuide();
+}
+
+function _pipGuide() {
+  // The YouTube player renders its own native PiP button (⧉) in the
+  // controls bar. Direct the user there — it works on iOS 14+ Safari.
+  showToast('Tap the video, then tap ⧉ in the player controls for PiP');
+  // Keep the toggle in sync so it doesn't show as "on" misleadingly
+  state.pip = false;
+  updateToggle('pipToggle', false);
 }
 
 // -- Targeted DOM updates for player (no iframe rebuild) --
@@ -651,7 +708,7 @@ function buildPlayerControlsHTML() {
   h += '<div class="control-card"><div class="control-label">Options</div>' +
     '<div class="toggle-row"><span class="toggle-label">Captions</span><div id="captionsToggle" class="toggle-track ' + (state.captions?'on':'') + '" data-action="toggle-captions"><div class="toggle-knob"></div></div></div>' +
     '<div class="toggle-row"><span class="toggle-label">Picture in Picture</span><div id="pipToggle" class="toggle-track ' + (state.pip?'on':'') + '" data-action="toggle-pip"><div class="toggle-knob"></div></div></div>' +
-    '<div style="margin-top:8px;font-size:11px;color:var(--faint)">Tip: Use the PiP button in the YouTube player controls for best results.</div></div></div>';
+    '<div style="margin-top:8px;font-size:11px;color:var(--faint)">Tap the toggle above, or tap the video then tap ⧉ in the player controls.</div></div></div>';
 
   return h;
 }
