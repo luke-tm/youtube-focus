@@ -26,10 +26,10 @@ var YT_API = {
     if (!params) params = {};
     if (!this._token) throw new Error('Not authenticated');
     var url = new URL(CONFIG.API_BASE + '/' + endpoint);
-    if (method === 'GET') {
-      var keys = Object.keys(params);
-      for (var i = 0; i < keys.length; i++) url.searchParams.set(keys[i], params[keys[i]]);
-    }
+    // Always add params as URL query params — YouTube's POST endpoints
+    // (videos/rate, commentThreads, playlists, etc.) use query params too
+    var keys = Object.keys(params);
+    for (var i = 0; i < keys.length; i++) url.searchParams.set(keys[i], params[keys[i]]);
 
     var opts = { method: method, headers: { 'Authorization': 'Bearer ' + this._token, 'Accept': 'application/json' } };
     if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
@@ -103,12 +103,12 @@ var YT_API = {
 
     if (!r.items || !r.items.length) return [];
 
-    // Get video details for duration + stats (1 unit, batched)
+    // Build a map from videoId → playlist item (for members-only fallback)
+    var itemMap = {};
     var videoIds = [];
     for (var i = 0; i < r.items.length; i++) {
-      if (r.items[i].contentDetails && r.items[i].contentDetails.videoId) {
-        videoIds.push(r.items[i].contentDetails.videoId);
-      }
+      var pid = r.items[i].contentDetails && r.items[i].contentDetails.videoId;
+      if (pid) { videoIds.push(pid); itemMap[pid] = r.items[i]; }
     }
     if (!videoIds.length) return [];
 
@@ -117,25 +117,50 @@ var YT_API = {
       id: videoIds.join(',')
     });
 
+    // Index returned details; videos.list silently omits members-only videos
+    // for non-owners, so we fall back to playlist-item snippet data for those.
+    var detailMap = {};
+    for (var j = 0; j < d.items.length; j++) detailMap[d.items[j].id] = d.items[j];
+
     var results = [];
-    for (var j = 0; j < d.items.length; j++) {
-      var v = d.items[j];
-      var seconds = parseDuration(v.contentDetails.duration);
-      if (seconds <= 60) continue; // Filter shorts
+    for (var k = 0; k < videoIds.length; k++) {
       if (results.length >= maxResults) break;
-      results.push({
-        id: v.id,
-        title: v.snippet.title,
-        channel: v.snippet.channelTitle,
-        channelId: v.snippet.channelId,
-        thumbnail: (v.snippet.thumbnails && v.snippet.thumbnails.medium && v.snippet.thumbnails.medium.url) || '',
-        thumbnailHigh: (v.snippet.thumbnails && v.snippet.thumbnails.high && v.snippet.thumbnails.high.url) || '',
-        publishedAt: v.snippet.publishedAt,
-        duration: formatDuration(v.contentDetails.duration),
-        views: (v.statistics && v.statistics.viewCount) || '0',
-        likes: parseInt((v.statistics && v.statistics.likeCount) || '0', 10),
-        commentCount: parseInt((v.statistics && v.statistics.commentCount) || '0', 10),
-      });
+      var vid = videoIds[k];
+      var v = detailMap[vid];
+      if (v) {
+        var seconds = parseDuration(v.contentDetails.duration);
+        if (seconds <= 60) continue; // Filter Shorts
+        results.push({
+          id: v.id,
+          title: v.snippet.title,
+          channel: v.snippet.channelTitle,
+          channelId: v.snippet.channelId,
+          thumbnail: (v.snippet.thumbnails && v.snippet.thumbnails.medium && v.snippet.thumbnails.medium.url) || '',
+          thumbnailHigh: (v.snippet.thumbnails && v.snippet.thumbnails.high && v.snippet.thumbnails.high.url) || '',
+          publishedAt: v.snippet.publishedAt,
+          duration: formatDuration(v.contentDetails.duration),
+          views: (v.statistics && v.statistics.viewCount) || '0',
+          likes: parseInt((v.statistics && v.statistics.likeCount) || '0', 10),
+          commentCount: parseInt((v.statistics && v.statistics.commentCount) || '0', 10),
+        });
+      } else {
+        // Members-only or restricted video — use playlist item data as fallback
+        var pi = itemMap[vid];
+        if (!pi) continue;
+        var sn = pi.snippet || {};
+        results.push({
+          id: vid,
+          title: sn.title || 'Members-only video',
+          channel: sn.videoOwnerChannelTitle || '',
+          channelId: sn.videoOwnerChannelId || '',
+          thumbnail: (sn.thumbnails && sn.thumbnails.medium && sn.thumbnails.medium.url) || '',
+          thumbnailHigh: (sn.thumbnails && sn.thumbnails.high && sn.thumbnails.high.url) || '',
+          publishedAt: sn.publishedAt || '',
+          duration: '',
+          views: '0', likes: 0, commentCount: 0,
+          membersOnly: true,
+        });
+      }
     }
     return results;
   },
@@ -148,29 +173,46 @@ var YT_API = {
     if (pageToken) p.pageToken = pageToken;
 
     var r = await this._fetch('playlistItems', p);
-    var videoIds = [];
+    var itemMap = {}, videoIds = [];
     for (var i = 0; i < r.items.length; i++) {
-      if (r.items[i].contentDetails && r.items[i].contentDetails.videoId) {
-        videoIds.push(r.items[i].contentDetails.videoId);
-      }
+      var pid = r.items[i].contentDetails && r.items[i].contentDetails.videoId;
+      if (pid) { videoIds.push(pid); itemMap[pid] = r.items[i]; }
     }
     if (!videoIds.length) return { videos: [], nextPageToken: null };
 
     var d = await this._fetch('videos', { part: 'contentDetails,statistics,snippet', id: videoIds.join(',') });
+    var detailMap = {};
+    for (var j = 0; j < d.items.length; j++) detailMap[d.items[j].id] = d.items[j];
+
     var videos = [];
-    for (var j = 0; j < d.items.length; j++) {
-      var v = d.items[j];
-      if (parseDuration(v.contentDetails.duration) <= 60) continue;
-      videos.push({
-        id: v.id, title: v.snippet.title, channel: v.snippet.channelTitle,
-        channelId: v.snippet.channelId,
-        thumbnail: (v.snippet.thumbnails && v.snippet.thumbnails.medium && v.snippet.thumbnails.medium.url) || '',
-        publishedAt: v.snippet.publishedAt,
-        duration: formatDuration(v.contentDetails.duration),
-        views: (v.statistics && v.statistics.viewCount) || '0',
-        likes: parseInt((v.statistics && v.statistics.likeCount) || '0', 10),
-        commentCount: parseInt((v.statistics && v.statistics.commentCount) || '0', 10),
-      });
+    for (var k = 0; k < videoIds.length; k++) {
+      var vid = videoIds[k];
+      var v = detailMap[vid];
+      if (v) {
+        if (parseDuration(v.contentDetails.duration) <= 60) continue;
+        videos.push({
+          id: v.id, title: v.snippet.title, channel: v.snippet.channelTitle,
+          channelId: v.snippet.channelId,
+          thumbnail: (v.snippet.thumbnails && v.snippet.thumbnails.medium && v.snippet.thumbnails.medium.url) || '',
+          publishedAt: v.snippet.publishedAt,
+          duration: formatDuration(v.contentDetails.duration),
+          views: (v.statistics && v.statistics.viewCount) || '0',
+          likes: parseInt((v.statistics && v.statistics.likeCount) || '0', 10),
+          commentCount: parseInt((v.statistics && v.statistics.commentCount) || '0', 10),
+        });
+      } else {
+        // Members-only / restricted — fall back to playlist item data
+        var pi = itemMap[vid];
+        if (!pi) continue;
+        var sn = pi.snippet || {};
+        videos.push({
+          id: vid, title: sn.title || 'Members-only video',
+          channel: sn.videoOwnerChannelTitle || '', channelId: sn.videoOwnerChannelId || '',
+          thumbnail: (sn.thumbnails && sn.thumbnails.medium && sn.thumbnails.medium.url) || '',
+          publishedAt: sn.publishedAt || '', duration: '',
+          views: '0', likes: 0, commentCount: 0, membersOnly: true,
+        });
+      }
     }
     return { videos: videos, nextPageToken: r.nextPageToken || null };
   },

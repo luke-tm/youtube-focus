@@ -186,7 +186,7 @@ function bindEvents() {
 
 // -- Player --
 function openPlayer(videoId) {
-  var allVids = [].concat(state.videos, state._subsFeedVideos || [], state.browsingChannelVideos, state.watchHistory, Object.values(state.playlistItems).reduce(function(a,b){return a.concat(b);},[]));
+  var allVids = [].concat(state.videos, state._subsFeedVideos || [], state.browsingChannelVideos, state.searchResults, state.watchHistory, Object.values(state.playlistItems).reduce(function(a,b){return a.concat(b);},[]));
   var video = null;
   for (var i = 0; i < allVids.length; i++) {
     if ((allVids[i].id || allVids[i].videoId) === videoId) { video = allVids[i]; break; }
@@ -611,9 +611,12 @@ function renderNav() {
 function videoCard(v) {
   var vid = v.id || v.videoId, thumb = v.thumbnail || v.thumbnailHigh;
   var views = v.views ? formatViewCount(v.views) : '', age = v.publishedAt ? timeAgo(v.publishedAt) : (v.age||'');
+  var durationBadge = v.membersOnly
+    ? '<div class="video-duration" style="background:rgba(255,180,0,.85)">Members</div>'
+    : (v.duration ? '<div class="video-duration">'+v.duration+'</div>' : '');
   return '<div class="video-card" data-action="open-player" data-video-id="' + vid + '">' +
     '<div class="video-thumb">' + (thumb ? '<img src="'+thumb+'" alt="" loading="lazy">' : '<div class="placeholder">'+I.play+'</div>') +
-    (v.duration ? '<div class="video-duration">'+v.duration+'</div>' : '') + '</div>' +
+    durationBadge + '</div>' +
     '<div class="video-info"><div class="video-title">' + esc(v.title) + '</div>' +
     '<div class="video-meta"><span>' + esc(v.channel) + '</span>' +
     (views ? '<span class="meta-dot"></span><span>' + views + ' views</span>' : '') +
@@ -774,7 +777,7 @@ function buildPlayerControlsHTML() {
   h += '<div class="control-card"><div class="control-label">Options</div>' +
     '<div class="toggle-row"><span class="toggle-label">Captions</span><div id="captionsToggle" class="toggle-track ' + (state.captions?'on':'') + '" data-action="toggle-captions"><div class="toggle-knob"></div></div></div>' +
     '<div class="toggle-row"><span class="toggle-label">Picture in Picture</span>' +
-    '<button class="pill" data-action="open-pip-guide" style="font-size:12px">How to use ⧉</button></div>' +
+    '<button class="pill" data-action="open-pip-guide" style="font-size:12px">How to use PiP</button></div>' +
     '</div>';
 
   if (state.showPipGuide) {
@@ -782,12 +785,13 @@ function buildPlayerControlsHTML() {
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
       '<strong style="font-size:14px">Picture in Picture</strong>' +
       '<button class="icon-btn small" data-action="close-pip-guide">' + I.x + '</button></div>' +
-      '<p style="font-size:13px;color:var(--dim);line-height:1.6;margin-bottom:10px">PiP is controlled by the YouTube player. To activate:</p>' +
-      '<ol style="font-size:13px;color:var(--text);line-height:2.2;padding-left:18px;margin-bottom:10px">' +
-      '<li>Tap the video to reveal controls</li>' +
-      '<li>Tap the <strong>⧉</strong> icon that appears in the player</li>' +
-      '</ol>' +
-      '<p style="font-size:11px;color:var(--faint);line-height:1.5">Requires iOS 14+ or iPadOS 14+. The icon appears in the bottom-right area of the YouTube player controls when a video is playing.</p>' +
+      '<p style="font-size:13px;color:var(--dim);line-height:1.6;margin-bottom:12px">YouTube\'s built-in PiP button requires a Premium subscription. Use iOS\'s native PiP instead:</p>' +
+      '<div style="font-size:13px;color:var(--text);line-height:2;margin-bottom:12px">' +
+      '<div style="margin-bottom:6px"><strong>1.</strong> Start playing the video</div>' +
+      '<div style="margin-bottom:6px"><strong>2.</strong> Swipe up from the bottom (or press Home) to go to the Home Screen</div>' +
+      '<div><strong>3.</strong> iOS will automatically float the video in a PiP window</div>' +
+      '</div>' +
+      '<p style="font-size:11px;color:var(--faint);line-height:1.5">Requires iOS 14+. Make sure Settings → General → Picture in Picture is enabled. Tap the PiP window to bring the app back.</p>' +
       '</div>';
   }
 
