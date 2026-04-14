@@ -257,6 +257,41 @@ var YT_API = {
     return { id: r.id, title: r.snippet.title, itemCount: 0 };
   },
 
+  // ── Search ── (100 units for search.list + 1 unit for videos.list)
+  search: async function(query, pageToken) {
+    var p = { part: 'snippet', q: query, type: 'video', maxResults: '20', safeSearch: 'none' };
+    if (pageToken) p.pageToken = pageToken;
+    var r = await this._fetch('search', p);
+    if (!r.items || !r.items.length) return { videos: [], nextPageToken: null };
+
+    var videoIds = [];
+    for (var i = 0; i < r.items.length; i++) {
+      if (r.items[i].id && r.items[i].id.videoId) videoIds.push(r.items[i].id.videoId);
+    }
+    if (!videoIds.length) return { videos: [], nextPageToken: null };
+
+    var d = await this._fetch('videos', { part: 'contentDetails,statistics,snippet', id: videoIds.join(',') });
+    var results = [];
+    for (var j = 0; j < d.items.length; j++) {
+      var v = d.items[j];
+      if (parseDuration(v.contentDetails.duration) <= 60) continue; // filter Shorts
+      results.push({
+        id: v.id,
+        title: v.snippet.title,
+        channel: v.snippet.channelTitle,
+        channelId: v.snippet.channelId,
+        thumbnail: (v.snippet.thumbnails && v.snippet.thumbnails.medium && v.snippet.thumbnails.medium.url) || '',
+        thumbnailHigh: (v.snippet.thumbnails && v.snippet.thumbnails.high && v.snippet.thumbnails.high.url) || '',
+        publishedAt: v.snippet.publishedAt,
+        duration: formatDuration(v.contentDetails.duration),
+        views: (v.statistics && v.statistics.viewCount) || '0',
+        likes: parseInt((v.statistics && v.statistics.likeCount) || '0', 10),
+        commentCount: parseInt((v.statistics && v.statistics.commentCount) || '0', 10),
+      });
+    }
+    return { videos: results, nextPageToken: r.nextPageToken || null };
+  },
+
   // ── User ── (1 unit)
   getMyChannel: async function() {
     var r = await this._fetch('channels', { part: 'snippet', mine: 'true' });

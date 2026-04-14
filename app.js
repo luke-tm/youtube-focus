@@ -7,7 +7,7 @@
 // - Subscriptions cached to localStorage for 6 hours
 // ============================================================
 
-var SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+var SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 var $ = function(sel) { return document.querySelector(sel); };
 var esc = function(s) { if (!s) return ''; var d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
 
@@ -15,11 +15,13 @@ var state = {
   authed: false, loading: false, _loadError: null,
   tab: 'subs', accountSub: 'history',
   subscriptions: [], videos: [], feedChannelIds: [],
-  player: null, speed: 1, customSpeed: '1', captions: true, pip: false,
+  player: null, speed: 1, captions: true, pip: false,
   playerRating: 'none', comments: [], commentsLoading: false, showComments: false, showSaveMenu: false,
   playlists: [], playlistItems: {}, viewingPlaylist: null,
   watchHistory: JSON.parse(localStorage.getItem('yt_focus_history') || '[]'),
   userProfile: null, search: '', toast: null,
+  searchMode: false, searchResults: [], searchLoading: false, searchNextPage: null,
+  showPipGuide: false,
   browsingChannel: null, browsingChannelVideos: [], browsingNextPage: null, browsingLoading: false,
   showChannelPicker: false,
   _subsFeedVideos: undefined,
@@ -140,7 +142,11 @@ function bindEvents() {
       case 'back-playlist': state.viewingPlaylist = null; render(); break;
       case 'refresh-feed': refreshFeed(); break;
       case 'create-playlist-modal': var n = prompt('New playlist name:'); if (n && n.trim()) createPlaylist(n.trim()); break;
-      case 'clear-search': state.search = ''; render(); break;
+      case 'do-search': if (state.search.trim()) performSearch(state.search.trim()); break;
+      case 'search-load-more': searchLoadMore(); break;
+      case 'clear-search': state.search = ''; state.searchMode = false; state.searchResults = []; state.searchNextPage = null; render(); break;
+      case 'open-pip-guide': state.showPipGuide = true; renderPlayerControls(); break;
+      case 'close-pip-guide': state.showPipGuide = false; renderPlayerControls(); break;
       case 'browse-channel': browseChannel(d.channelId, d.channelName); break;
       case 'back-browse': state.browsingChannel = null; render(); break;
       case 'load-more-channel': loadMoreChannelVideos(); break;
@@ -153,12 +159,18 @@ function bindEvents() {
     }
   });
   document.addEventListener('input', function(e) {
-    if (e.target.id === 'searchInput') { state.search = e.target.value; render(); }
-    if (e.target.id === 'customSpeedInput') state.customSpeed = e.target.value;
+    if (e.target.id === 'searchInput') {
+      state.search = e.target.value;
+      // Don't call render() — that destroys the focused input and dismisses the keyboard.
+      // Instead do a cheap in-place update of the video grid only.
+      if (!state.searchMode) updateSearchFilter();
+    }
   });
-  document.addEventListener('change', function(e) { if (e.target.id === 'customSpeedInput') applyCustomSpeed(); });
   document.addEventListener('keydown', function(e) {
-    if (e.target.id === 'customSpeedInput' && e.key === 'Enter') { e.target.blur(); applyCustomSpeed(); }
+    if (e.target.id === 'searchInput' && (e.key === 'Enter' || e.key === 'Go' || e.key === 'Search')) {
+      e.target.blur();
+      if (state.search.trim()) performSearch(state.search.trim());
+    }
     if (e.target.id === 'commentInput' && e.key === 'Enter') postComment();
   });
   // Track PiP state changes driven by the YouTube player's native PiP button
@@ -180,7 +192,7 @@ function openPlayer(videoId) {
     if ((allVids[i].id || allVids[i].videoId) === videoId) { video = allVids[i]; break; }
   }
   if (!video) return;
-  state.player = video; state.speed = 1; state.customSpeed = '1'; state.captions = true; state.pip = false;
+  state.player = video; state.speed = 1; state.captions = true; state.pip = false; state.showPipGuide = false;
   state.playerRating = 'none'; state.comments = []; state.showComments = false; state.showSaveMenu = false;
   state._playerRendered = false;
   var vid = video.id || video.videoId;
@@ -194,21 +206,9 @@ function openPlayer(videoId) {
 function closePlayer() { state.player = null; state._playerRendered = false; render(); }
 
 function setSpeed(s) {
-  state.speed = s; state.customSpeed = String(s);
+  state.speed = s;
   sendPlayerCommand('setPlaybackRate', [s]);
   updateSpeedButtons();
-}
-
-function applyCustomSpeed() {
-  var v = parseFloat(state.customSpeed);
-  if (!isNaN(v)) {
-    var c = Math.min(5, Math.max(0.1, Math.round(v*100)/100));
-    state.speed = c; state.customSpeed = String(c);
-    sendPlayerCommand('setPlaybackRate', [c]);
-    updateSpeedButtons();
-  } else {
-    state.customSpeed = String(state.speed);
-  }
 }
 
 function toggleCaptions() {
@@ -302,15 +302,6 @@ function updateSpeedButtons() {
   for (var i = 0; i < btns.length; i++) {
     var s = parseFloat(btns[i].dataset.speed);
     btns[i].className = 'speed-btn' + (state.speed === s ? ' active' : '');
-  }
-  var custom = $('#customSpeedInput');
-  if (custom) {
-    custom.value = state.customSpeed;
-    custom.className = 'custom-speed-input' + (SPEEDS.indexOf(state.speed) < 0 ? ' custom-active' : '');
-  }
-  var label = $('#customSpeedLabel');
-  if (label) {
-    label.textContent = SPEEDS.indexOf(state.speed) < 0 ? 'Current: ' + state.speed + '×' : '';
   }
 }
 
@@ -483,6 +474,58 @@ var I = {
 
 var LOGO = '<svg viewBox="0 0 380 85" width="116" height="26" style="display:block"><path d="M57.307 5.706C56.586 2.86 54.372.617 51.564-.116 47.043-1.32 29-1.32 29-1.32S10.957-1.32 6.436-.116C3.628.617 1.414 2.86.693 5.706-.495 10.285-.495 19.84-.495 19.84s0 9.555 1.188 14.134c.721 2.846 2.935 5.009 5.743 5.742C10.957 40.92 29 40.92 29 40.92s18.043 0 22.564-1.204c2.808-.733 5.022-2.896 5.743-5.742C58.495 29.395 58.495 19.84 58.495 19.84s0-9.555-1.188-14.134z" fill="#FF0000" transform="translate(2,22)"/><path d="M23.205 28.52V11.16l14.963 8.68-14.963 8.68z" fill="white" transform="translate(2,22)"/><text x="72" y="58" font-family="Roboto,Arial,sans-serif" font-size="38" font-weight="700" fill="currentColor" letter-spacing="-1.2">YouTube</text></svg>';
 
+// -- Search --
+// Updates only the video grid in the current tab without touching the search input
+// (prevents keyboard dismissal on iOS)
+function updateSearchFilter() {
+  var grid = document.getElementById('videoGrid');
+  if (!grid) return;
+  var q = state.search.toLowerCase();
+  var vids = [];
+  if (state.tab === 'feed') {
+    vids = state.videos;
+    if (q) vids = vids.filter(function(v) { return v.title.toLowerCase().indexOf(q) >= 0 || v.channel.toLowerCase().indexOf(q) >= 0; });
+  } else if (state.tab === 'subs' && Array.isArray(state._subsFeedVideos)) {
+    vids = q ? state._subsFeedVideos.filter(function(v) { return v.title.toLowerCase().indexOf(q) >= 0 || v.channel.toLowerCase().indexOf(q) >= 0; }) : state._subsFeedVideos;
+  } else {
+    return;
+  }
+  grid.innerHTML = vids.length ? vids.map(videoCard).join('') : empty(I.search, 'No results', 'Try a different search.');
+}
+
+async function performSearch(query) {
+  state.searchMode = true;
+  state.searchResults = [];
+  state.searchLoading = true;
+  state.searchNextPage = null;
+  render();
+  try {
+    var r = await apiCall(function() { return YT_API.search(query); });
+    state.searchResults = r.videos;
+    state.searchNextPage = r.nextPageToken;
+  } catch (e) {
+    showToast('Search failed: ' + (e.message || String(e)));
+  }
+  state.searchLoading = false;
+  render();
+}
+
+async function searchLoadMore() {
+  if (!state.searchNextPage || state.searchLoading) return;
+  state.searchLoading = true;
+  var grid = document.getElementById('videoGrid');
+  if (grid) grid.insertAdjacentHTML('beforeend', '<div class="loading" style="grid-column:1/-1"><div class="spinner"></div></div>');
+  try {
+    var r = await apiCall(function() { return YT_API.search(state.search, state.searchNextPage); });
+    state.searchResults = state.searchResults.concat(r.videos);
+    state.searchNextPage = r.nextPageToken;
+  } catch (e) {
+    showToast('Failed to load more');
+  }
+  state.searchLoading = false;
+  render();
+}
+
 // -- Render (full page -- used for navigation, NOT for player control changes) --
 function render() {
   var app = $('#app');
@@ -496,6 +539,12 @@ function render() {
   if (state.browsingChannel) { app.innerHTML = renderChannelBrowse(); return; }
 
   var h = renderTopBar();
+  if (state.searchMode) {
+    h += renderSearchResults();
+    h += renderNav();
+    app.innerHTML = h;
+    return;
+  }
   if (state.tab === 'feed') h += renderFeed();
   else if (state.tab === 'subs') h += renderSubs();
   else if (state.tab === 'account') h += renderAccount();
@@ -524,9 +573,30 @@ function renderSignIn() {
 
 function renderTopBar() {
   return '<div class="top-bar"><div class="logo-wrap">' + LOGO + '</div>' +
-    '<div class="search-wrap">' + I.search + '<input type="text" id="searchInput" placeholder="Search..." value="' + esc(state.search) + '">' +
-    (state.search ? '<button class="icon-btn small" data-action="clear-search">' + I.x + '</button>' : '') + '</div>' +
-    '<button class="icon-btn" data-action="refresh-feed" title="Refresh">' + I.refresh + '</button></div>';
+    '<div class="search-wrap">' +
+    '<button class="icon-btn small" data-action="do-search" style="flex-shrink:0;padding:4px;margin-right:2px" title="Search">' + I.search + '</button>' +
+    '<input type="search" inputmode="search" enterkeyhint="search" id="searchInput" placeholder="Search YouTube..." value="' + esc(state.search) + '" autocomplete="off">' +
+    (state.search ? '<button class="icon-btn small" data-action="clear-search">' + I.x + '</button>' : '') +
+    '</div>' +
+    (state.searchMode ? '' : '<button class="icon-btn" data-action="refresh-feed" title="Refresh">' + I.refresh + '</button>') +
+    '</div>';
+}
+
+function renderSearchResults() {
+  if (state.searchLoading) return '<div class="loading"><div class="spinner"></div> Searching...</div>';
+  var h = '<div style="padding:10px 12px 4px;display:flex;align-items:center;gap:8px">' +
+    '<div class="section-title" style="flex:1">Results for \u201c' + esc(state.search) + '\u201d</div></div>';
+  h += '<div id="videoGrid" class="feed-grid">';
+  if (state.searchResults.length) {
+    h += state.searchResults.map(videoCard).join('');
+  } else {
+    h += empty(I.search, 'No results', 'Try a different search term.');
+  }
+  h += '</div>';
+  if (state.searchNextPage && !state.searchLoading) {
+    h += '<div style="padding:16px;text-align:center"><button class="btn btn-cancel" data-action="search-load-more" style="width:100%">Load more results</button></div>';
+  }
+  return h;
 }
 
 function renderNav() {
@@ -581,7 +651,7 @@ function renderFeed() {
     h += '</div>';
   }
 
-  h += '<div class="feed-grid">' + (vids.length ? vids.map(videoCard).join('') : empty(I.home, state.feedChannelIds.length ? 'No videos yet' : 'No channels selected', state.feedChannelIds.length ? 'Try refreshing.' : 'Tap "Select Channels" to pick channels for your feed.')) + '</div>';
+  h += '<div id="videoGrid" class="feed-grid">' + (vids.length ? vids.map(videoCard).join('') : empty(I.home, state.feedChannelIds.length ? 'No videos yet' : 'No channels selected', state.feedChannelIds.length ? 'Try refreshing.' : 'Tap "Select Channels" to pick channels for your feed.')) + '</div>';
   return h;
 }
 
@@ -609,7 +679,7 @@ function renderSubs() {
   } else {
     var filtered = q ? allVids.filter(function(v) { return v.title.toLowerCase().indexOf(q) >= 0 || v.channel.toLowerCase().indexOf(q) >= 0; }) : allVids;
     h += '<div style="padding:0 12px 4px"><div class="section-title">Recent uploads</div></div>';
-    h += '<div class="feed-grid">' + (filtered.length ? filtered.map(videoCard).join('') : empty(I.search, 'No results', 'Try a different search.')) + '</div>';
+    h += '<div id="videoGrid" class="feed-grid">' + (filtered.length ? filtered.map(videoCard).join('') : empty(I.search, 'No results', 'Try a different search.')) + '</div>';
   }
   return h;
 }
@@ -699,16 +769,29 @@ function buildPlayerControlsHTML() {
   for (var k = 0; k < SPEEDS.length; k++) {
     h += '<button class="speed-btn ' + (state.speed===SPEEDS[k]?'active':'') + '" data-action="set-speed" data-speed="' + SPEEDS[k] + '">' + SPEEDS[k] + '×</button>';
   }
-  h += '</div><div class="custom-speed-row"><span style="font-size:12px;color:var(--dim);flex-shrink:0">Custom:</span>' +
-    '<input type="number" inputmode="decimal" min="0.1" max="5" step="0.05" id="customSpeedInput" value="' + state.customSpeed + '" class="custom-speed-input ' + (SPEEDS.indexOf(state.speed)<0?'custom-active':'') + '">' +
-    '<span style="font-size:14px;font-weight:600;font-family:monospace;color:var(--dim)">×</span>' +
-    '<span style="font-size:11px;color:var(--faint);margin-left:4px">0.1–5</span></div>' +
-    '<div id="customSpeedLabel" style="margin-top:8px;font-size:12px;color:var(--red);font-family:monospace;font-weight:600">' + (SPEEDS.indexOf(state.speed)<0 ? 'Current: '+state.speed+'×' : '') + '</div></div>';
+  h += '</div></div>';
 
   h += '<div class="control-card"><div class="control-label">Options</div>' +
     '<div class="toggle-row"><span class="toggle-label">Captions</span><div id="captionsToggle" class="toggle-track ' + (state.captions?'on':'') + '" data-action="toggle-captions"><div class="toggle-knob"></div></div></div>' +
-    '<div class="toggle-row"><span class="toggle-label">Picture in Picture</span><div id="pipToggle" class="toggle-track ' + (state.pip?'on':'') + '" data-action="toggle-pip"><div class="toggle-knob"></div></div></div>' +
-    '<div style="margin-top:8px;font-size:11px;color:var(--faint)">Tap the toggle above, or tap the video then tap ⧉ in the player controls.</div></div></div>';
+    '<div class="toggle-row"><span class="toggle-label">Picture in Picture</span>' +
+    '<button class="pill" data-action="open-pip-guide" style="font-size:12px">How to use ⧉</button></div>' +
+    '</div>';
+
+  if (state.showPipGuide) {
+    h += '<div class="pip-guide-card">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">' +
+      '<strong style="font-size:14px">Picture in Picture</strong>' +
+      '<button class="icon-btn small" data-action="close-pip-guide">' + I.x + '</button></div>' +
+      '<p style="font-size:13px;color:var(--dim);line-height:1.6;margin-bottom:10px">PiP is controlled by the YouTube player. To activate:</p>' +
+      '<ol style="font-size:13px;color:var(--text);line-height:2.2;padding-left:18px;margin-bottom:10px">' +
+      '<li>Tap the video to reveal controls</li>' +
+      '<li>Tap the <strong>⧉</strong> icon that appears in the player</li>' +
+      '</ol>' +
+      '<p style="font-size:11px;color:var(--faint);line-height:1.5">Requires iOS 14+ or iPadOS 14+. The icon appears in the bottom-right area of the YouTube player controls when a video is playing.</p>' +
+      '</div>';
+  }
+
+  h += '</div>';
 
   return h;
 }

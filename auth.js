@@ -51,7 +51,28 @@ var AUTH = {
       localStorage.removeItem('yt_focus_auth');
     }
 
-    // Step 3: Not authenticated
+    // Step 3: Silent re-auth — if the user has previously signed in and Google
+    // still has an active session, redirect with prompt=none to get a fresh
+    // token without showing any UI. Only attempted once per page-load cycle
+    // (sessionStorage flag) to prevent infinite redirect loops.
+    try {
+      if (localStorage.getItem('yt_focus_has_authed') === '1' &&
+          !sessionStorage.getItem('yt_silent_tried')) {
+        sessionStorage.setItem('yt_silent_tried', '1');
+        var silentParams = new URLSearchParams({
+          client_id: CONFIG.CLIENT_ID,
+          redirect_uri: CONFIG.REDIRECT_URI,
+          response_type: 'token',
+          scope: CONFIG.SCOPES,
+          include_granted_scopes: 'true',
+          prompt: 'none'
+        });
+        window.location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + silentParams.toString();
+        return;
+      }
+    } catch (e) {}
+
+    // Step 4: Not authenticated
     self._debug(debugInfo + '\nStatus: No valid token');
     if (self._onAuthChange) self._onAuthChange(false);
   },
@@ -78,6 +99,7 @@ var AUTH = {
         token: this._accessToken,
         expiresAt: this._expiresAt
       }));
+      localStorage.setItem('yt_focus_has_authed', '1');
     } catch (e) {}
   },
 
@@ -115,6 +137,8 @@ var AUTH = {
     YT_API.setToken(null);
     YT_API.clearCache();
     localStorage.removeItem('yt_focus_auth');
+    localStorage.removeItem('yt_focus_has_authed');
+    try { sessionStorage.removeItem('yt_silent_tried'); } catch(e) {}
     if (this._onAuthChange) this._onAuthChange(false);
   },
 
