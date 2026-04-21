@@ -56,6 +56,12 @@
 
   <script src="app.js?v=4"></script>
 
+  <!-- Miniplayer: outside #app so app.innerHTML resets don't destroy the iframe -->
+  <div id="miniplayer" class="mini-player" style="display:none">
+    <div class="mini-iframe-slot" id="mini-iframe-slot" data-action="expand-player"></div>
+    <div id="mini-bar" class="mini-bar"></div>
+  </div>
+
   <script>
     // Clear old service workers and caches
     if ('serviceWorker' in navigator) {
