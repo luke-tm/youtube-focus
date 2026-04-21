@@ -22,6 +22,19 @@
     </div>
   </div>
 
+  <!--
+    Player container lives OUTSIDE #app so that app.innerHTML replacements
+    never touch the iframe. The iframe is created once and stays here for the
+    entire session — it is never re-parented. Full/mini modes are switched
+    purely via CSS class changes on this element, which does NOT reload the iframe.
+  -->
+  <div id="player-container">
+    <div id="player-ph" class="player-header"></div>
+    <div id="player-embed-slot" class="player-embed" data-action="expand-player"></div>
+    <div id="player-full-controls"></div>
+    <div id="player-mini-bar" class="mini-bar"></div>
+  </div>
+
   <script>
     window.onerror = function(msg, src, line, col, err) {
       var el = document.getElementById('app');
@@ -55,12 +68,6 @@
   <script src="auth.js?v=4"></script>
 
   <script src="app.js?v=4"></script>
-
-  <!-- Miniplayer: outside #app so app.innerHTML resets don't destroy the iframe -->
-  <div id="miniplayer" class="mini-player" style="display:none">
-    <div class="mini-iframe-slot" id="mini-iframe-slot" data-action="expand-player"></div>
-    <div id="mini-bar" class="mini-bar"></div>
-  </div>
 
   <script>
     // Clear old service workers and caches

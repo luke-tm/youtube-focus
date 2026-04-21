@@ -193,21 +193,15 @@ function bindEvents() {
 
 // -- Player --
 function openPlayer(videoId) {
-  // If the same video is already in the miniplayer, just expand it
+  // If the same video is already minimized, just expand it
   if (state.miniPlayer && state.player && (state.player.id || state.player.videoId) === videoId) {
     expandMiniPlayer(); return;
   }
-  // Tear down miniplayer state before opening a new video
-  if (state.miniPlayer) {
-    state.miniPlayer = false;
-    var slot0 = document.getElementById('mini-iframe-slot');
-    if (slot0 && _playerIframe && slot0.contains(_playerIframe)) slot0.removeChild(_playerIframe);
-    _playerIframe = null;
-    var miniEl = document.getElementById('miniplayer');
-    if (miniEl) miniEl.style.display = 'none';
-  } else {
-    _playerIframe = null; // fresh iframe for each new video
-  }
+  // New video — clear old iframe so _getOrCreateIframe makes a fresh one
+  _playerIframe = null;
+  state.miniPlayer = false;
+  var oldSlot = document.getElementById('player-embed-slot');
+  if (oldSlot) oldSlot.innerHTML = '';
   var allVids = [].concat(state.videos, state._subsFeedVideos || [], state.browsingChannelVideos, state.searchResults, state.watchHistory, Object.values(state.playlistItems).reduce(function(a,b){return a.concat(b);},[]));
   var video = null;
   for (var i = 0; i < allVids.length; i++) {
@@ -222,13 +216,18 @@ function openPlayer(videoId) {
   state.watchHistory = [entry].concat(state.watchHistory.filter(function(h){return (h.id||h.videoId)!==vid;})).slice(0, 100);
   localStorage.setItem('yt_focus_history', JSON.stringify(state.watchHistory));
   YT_API.getRating(vid).then(function(r) { state.playerRating = r; updateRatingButtons(); }).catch(function(){});
-  render();
+  render();        // update #app with tab content behind the player
+  showPlayerFull(); // show #player-container in full mode
 }
 
 function closePlayer() {
-  if (state.miniPlayer) { closeMiniPlayer(); return; }
   _playerIframe = null;
-  state.player = null; state._playerRendered = false; render();
+  state.player = null; state.miniPlayer = false; state._playerRendered = false;
+  var c = document.getElementById('player-container');
+  if (c) c.className = '';
+  var slot = document.getElementById('player-embed-slot');
+  if (slot) slot.innerHTML = '';
+  render();
 }
 
 function setSpeed(s) {
@@ -250,7 +249,7 @@ function toggleCaptions() {
 }
 
 function sendPlayerCommand(func, args) {
-  var iframe = _playerIframe || document.querySelector('.player-embed iframe');
+  var iframe = _playerIframe;
   if (!iframe || !iframe.contentWindow) return;
   try {
     iframe.contentWindow.postMessage(JSON.stringify({
@@ -260,7 +259,7 @@ function sendPlayerCommand(func, args) {
 }
 
 function requestPiP() {
-  var iframe = document.getElementById('ytplayer');
+  var iframe = _playerIframe;
   if (!iframe) { showToast('No video playing'); return; }
 
   // Exit PiP if already active
@@ -352,8 +351,7 @@ function updateRatingButtons() {
 }
 
 function renderPlayerControls() {
-  // Re-render only the area below the video, not the iframe
-  var container = $('#playerControlsArea');
+  var container = document.getElementById('player-full-controls');
   if (!container || !state.player) return;
   container.innerHTML = buildPlayerControlsHTML();
 }
@@ -562,7 +560,6 @@ function render() {
     app.innerHTML = '<div style="padding:40px 20px;text-align:center;font-family:Roboto,sans-serif"><h2 style="color:var(--red);margin-bottom:12px">Error</h2><p style="color:var(--dim);font-size:14px;margin-bottom:16px;word-break:break-all">' + esc(state._loadError) + '</p><button class="btn btn-confirm" data-action="retry-load">Retry</button> <button class="btn btn-cancel" data-action="signout">Sign Out</button></div>';
     return;
   }
-  if (state.player && !state.miniPlayer) { renderPlayer(); return; }
   if (state.viewingPlaylist) { app.innerHTML = renderPlaylistView(); return; }
   if (state.browsingChannel) { app.innerHTML = renderChannelBrowse(); return; }
 
@@ -733,78 +730,82 @@ function renderChannelBrowse() {
   return h;
 }
 
-// -- Player (iframe is moved via DOM, never recreated, to preserve playback) --
-function renderPlayer() {
-  var app = $('#app');
-  var v = state.player, vid = v.id || v.videoId;
-  var cc = state.captions ? 1 : 0;
+// -- Player (iframe lives permanently in #player-container; CSS class switches modes) --
+// iOS Safari reloads iframes on DOM re-parent. By keeping the iframe in one fixed
+// container and only toggling CSS classes, playback is never interrupted.
 
-  var h = '<div class="player-view">' +
-    '<div class="player-header">' +
+function showPlayerFull() {
+  if (!state.player) return;
+  var v = state.player, vid = v.id || v.videoId, cc = state.captions ? 1 : 0;
+  var c = document.getElementById('player-container');
+  var ph = document.getElementById('player-ph');
+  var slot = document.getElementById('player-embed-slot');
+  var fc = document.getElementById('player-full-controls');
+  var mb = document.getElementById('player-mini-bar');
+  if (!c || !ph || !slot || !fc || !mb) return;
+
+  ph.innerHTML =
     '<button class="icon-btn" data-action="close-player">' + I.back + '</button>' +
     '<div style="flex:1;font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(v.channel) + '</div>' +
-    '<button class="icon-btn" data-action="minimize-player" title="Miniplayer">' + I.miniplayer + '</button>' +
-    '</div>' +
-    '<div class="player-embed" id="playerEmbed"></div>' +
-    '<div id="playerControlsArea">' + buildPlayerControlsHTML() + '</div>' +
-    '</div>';
+    '<button class="icon-btn" data-action="minimize-player" title="Miniplayer">' + I.miniplayer + '</button>';
 
-  app.innerHTML = h;
+  if (!_playerIframe) {
+    var iframe = document.createElement('iframe');
+    iframe.id = 'ytplayer';
+    iframe.dataset.vid = vid;
+    iframe.setAttribute('allow', 'autoplay; picture-in-picture; encrypted-media; fullscreen');
+    iframe.setAttribute('allowfullscreen', '');
+    iframe.src = 'https://www.youtube.com/embed/' + vid +
+      '?rel=0&modestbranding=1&cc_load_policy=' + cc +
+      '&playsinline=1&autoplay=1&enablejsapi=1&origin=' +
+      encodeURIComponent(window.location.origin);
+    slot.appendChild(iframe);
+    _playerIframe = iframe;
+  }
 
-  // Move or create the iframe — DOM move preserves video playback position
-  var iframe = _getOrCreateIframe(vid, cc);
-  var embedSlot = document.getElementById('playerEmbed');
-  if (embedSlot) embedSlot.appendChild(iframe);
-
+  fc.innerHTML = buildPlayerControlsHTML();
+  ph.style.display = '';
+  fc.style.display = '';
+  mb.style.display = 'none';
+  c.className = 'mode-full';
   state._playerRendered = true;
 }
 
-function _getOrCreateIframe(vid, cc) {
-  if (_playerIframe && _playerIframe.dataset.vid === vid) return _playerIframe;
-  var iframe = document.createElement('iframe');
-  iframe.id = 'ytplayer';
-  iframe.dataset.vid = vid;
-  iframe.setAttribute('allow', 'autoplay; picture-in-picture; encrypted-media; fullscreen');
-  iframe.setAttribute('allowfullscreen', '');
-  iframe.src = 'https://www.youtube.com/embed/' + vid +
-    '?rel=0&modestbranding=1&cc_load_policy=' + cc +
-    '&playsinline=1&autoplay=1&enablejsapi=1&origin=' +
-    encodeURIComponent(window.location.origin);
-  _playerIframe = iframe;
-  return iframe;
-}
-
 function minimizePlayer() {
-  if (!state.player || !_playerIframe) return;
+  if (!state.player) return;
   state.miniPlayer = true;
-  var slot = document.getElementById('mini-iframe-slot');
-  var bar = document.getElementById('mini-bar');
-  if (slot) slot.appendChild(_playerIframe);
-  if (bar) bar.innerHTML =
-    '<span class="mini-title">' + esc(state.player.title) + '</span>' +
-    '<button class="icon-btn small" data-action="expand-player" title="Expand">' + I.expand + '</button>' +
-    '<button class="icon-btn small" data-action="close-mini-player" title="Close">' + I.x + '</button>';
-  var mini = document.getElementById('miniplayer');
-  if (mini) mini.style.display = 'block';
-  render();
+  var c = document.getElementById('player-container');
+  var ph = document.getElementById('player-ph');
+  var fc = document.getElementById('player-full-controls');
+  var mb = document.getElementById('player-mini-bar');
+  if (!c) return;
+  // CSS class handles hiding ph/fc and making container small — no DOM moves
+  c.className = 'mode-mini';
+  if (ph) ph.style.display = 'none';
+  if (fc) fc.style.display = 'none';
+  if (mb) {
+    mb.innerHTML =
+      '<span class="mini-title">' + esc(state.player.title) + '</span>' +
+      '<button class="icon-btn small" data-action="expand-player" title="Expand">' + I.expand + '</button>' +
+      '<button class="icon-btn small" data-action="close-mini-player" title="Close">' + I.x + '</button>';
+    mb.style.display = 'flex';
+  }
+  render(); // update #app with tab content now visible behind the mini
 }
 
 function expandMiniPlayer() {
   if (!state.player) return;
   state.miniPlayer = false;
-  var mini = document.getElementById('miniplayer');
-  if (mini) mini.style.display = 'none';
-  render(); // calls renderPlayer() which moves iframe from mini slot back to #playerEmbed
+  showPlayerFull();
 }
 
 function closeMiniPlayer() {
-  var slot = document.getElementById('mini-iframe-slot');
-  if (slot && _playerIframe && slot.contains(_playerIframe)) slot.removeChild(_playerIframe);
   _playerIframe = null;
-  state.miniPlayer = false;
-  state.player = null;
-  var mini = document.getElementById('miniplayer');
-  if (mini) mini.style.display = 'none';
+  state.player = null; state.miniPlayer = false;
+  var c = document.getElementById('player-container');
+  if (c) c.className = '';
+  var slot = document.getElementById('player-embed-slot');
+  if (slot) slot.innerHTML = '';
   render();
 }
 

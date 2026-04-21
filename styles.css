@@ -143,8 +143,20 @@ body{font-family:'Roboto','Arial',sans-serif;background:var(--bg);color:var(--te
 
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--s3);border-radius:2px}
 
-.mini-player{position:fixed;bottom:calc(60px + var(--safe-bottom) + 8px);right:12px;width:min(240px,62vw);background:var(--s1);border:1px solid var(--s3);border-radius:12px;overflow:hidden;z-index:200;box-shadow:0 8px 32px rgba(0,0,0,.7)}
-.mini-iframe-slot{width:100%;aspect-ratio:16/9;background:#000;cursor:pointer;overflow:hidden;position:relative}
-.mini-iframe-slot iframe{position:absolute;inset:0;width:100%;height:100%;border:none;pointer-events:none}
+/* Player container — fixed outside #app; iframe never moves, only CSS class changes */
+#player-container{position:fixed;z-index:100;display:none;background:var(--bg)}
+#player-container.mode-full{inset:0;display:flex;flex-direction:column;overflow:hidden}
+#player-container.mode-full #player-full-controls{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
+#player-container.mode-full #player-embed-slot{pointer-events:all}
+#player-container.mode-mini{bottom:calc(60px + var(--safe-bottom) + 8px);right:12px;width:min(240px,62vw);display:block;border-radius:12px;border:1px solid var(--s3);box-shadow:0 8px 32px rgba(0,0,0,.75);background:var(--s1);overflow:hidden}
+#player-container.mode-mini #player-ph{display:none!important}
+#player-container.mode-mini #player-full-controls{display:none!important}
+#player-container.mode-mini #player-embed-slot{cursor:pointer}
+#player-container.mode-mini #player-embed-slot iframe{pointer-events:none}
+#player-embed-slot{width:100%;aspect-ratio:16/9;background:#000;flex-shrink:0}
+#player-embed-slot iframe{width:100%;height:100%;border:none;display:block}
+#player-ph{display:none}
+#player-full-controls{display:none}
+#player-mini-bar{display:none}
 .mini-bar{display:flex;align-items:center;gap:2px;padding:5px 6px;background:var(--s2)}
 .mini-title{flex:1;font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 2px}
