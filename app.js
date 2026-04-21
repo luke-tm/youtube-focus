@@ -22,11 +22,15 @@ var state = {
   userProfile: null, search: '', toast: null,
   searchMode: false, searchResults: [], searchLoading: false, searchNextPage: null,
   showPipGuide: false,
+  miniPlayer: false,
   browsingChannel: null, browsingChannelVideos: [], browsingNextPage: null, browsingLoading: false,
   showChannelPicker: false,
   _subsFeedVideos: undefined,
   _playerRendered: false, // tracks if player iframe is already in DOM
 };
+
+// Single shared iframe element — moved between full player and miniplayer without reload
+var _playerIframe = null;
 
 // -- Init --
 function init() {
@@ -147,6 +151,9 @@ function bindEvents() {
       case 'clear-search': state.search = ''; state.searchMode = false; state.searchResults = []; state.searchNextPage = null; render(); break;
       case 'open-pip-guide': state.showPipGuide = true; renderPlayerControls(); break;
       case 'close-pip-guide': state.showPipGuide = false; renderPlayerControls(); break;
+      case 'minimize-player': minimizePlayer(); break;
+      case 'expand-player': expandMiniPlayer(); break;
+      case 'close-mini-player': closeMiniPlayer(); break;
       case 'browse-channel': browseChannel(d.channelId, d.channelName); break;
       case 'back-browse': state.browsingChannel = null; render(); break;
       case 'load-more-channel': loadMoreChannelVideos(); break;
@@ -186,6 +193,21 @@ function bindEvents() {
 
 // -- Player --
 function openPlayer(videoId) {
+  // If the same video is already in the miniplayer, just expand it
+  if (state.miniPlayer && state.player && (state.player.id || state.player.videoId) === videoId) {
+    expandMiniPlayer(); return;
+  }
+  // Tear down miniplayer state before opening a new video
+  if (state.miniPlayer) {
+    state.miniPlayer = false;
+    var slot0 = document.getElementById('mini-iframe-slot');
+    if (slot0 && _playerIframe && slot0.contains(_playerIframe)) slot0.removeChild(_playerIframe);
+    _playerIframe = null;
+    var miniEl = document.getElementById('miniplayer');
+    if (miniEl) miniEl.style.display = 'none';
+  } else {
+    _playerIframe = null; // fresh iframe for each new video
+  }
   var allVids = [].concat(state.videos, state._subsFeedVideos || [], state.browsingChannelVideos, state.searchResults, state.watchHistory, Object.values(state.playlistItems).reduce(function(a,b){return a.concat(b);},[]));
   var video = null;
   for (var i = 0; i < allVids.length; i++) {
@@ -203,7 +225,11 @@ function openPlayer(videoId) {
   render();
 }
 
-function closePlayer() { state.player = null; state._playerRendered = false; render(); }
+function closePlayer() {
+  if (state.miniPlayer) { closeMiniPlayer(); return; }
+  _playerIframe = null;
+  state.player = null; state._playerRendered = false; render();
+}
 
 function setSpeed(s) {
   state.speed = s;
@@ -224,7 +250,7 @@ function toggleCaptions() {
 }
 
 function sendPlayerCommand(func, args) {
-  var iframe = document.querySelector('.player-embed iframe');
+  var iframe = _playerIframe || document.querySelector('.player-embed iframe');
   if (!iframe || !iframe.contentWindow) return;
   try {
     iframe.contentWindow.postMessage(JSON.stringify({
@@ -470,6 +496,8 @@ var I = {
   chev: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="m9 18 6-6-6-6"/></svg>',
   refresh: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
   filter: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>',
+  miniplayer: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="4" width="20" height="16" rx="2"/><rect x="13" y="13" width="8" height="6" rx="1" fill="currentColor" stroke="none"/></svg>',
+  expand: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>',
 };
 
 var LOGO = '<svg viewBox="0 0 380 85" width="116" height="26" style="display:block"><path d="M57.307 5.706C56.586 2.86 54.372.617 51.564-.116 47.043-1.32 29-1.32 29-1.32S10.957-1.32 6.436-.116C3.628.617 1.414 2.86.693 5.706-.495 10.285-.495 19.84-.495 19.84s0 9.555 1.188 14.134c.721 2.846 2.935 5.009 5.743 5.742C10.957 40.92 29 40.92 29 40.92s18.043 0 22.564-1.204c2.808-.733 5.022-2.896 5.743-5.742C58.495 29.395 58.495 19.84 58.495 19.84s0-9.555-1.188-14.134z" fill="#FF0000" transform="translate(2,22)"/><path d="M23.205 28.52V11.16l14.963 8.68-14.963 8.68z" fill="white" transform="translate(2,22)"/><text x="72" y="58" font-family="Roboto,Arial,sans-serif" font-size="38" font-weight="700" fill="currentColor" letter-spacing="-1.2">YouTube</text></svg>';
@@ -534,7 +562,7 @@ function render() {
     app.innerHTML = '<div style="padding:40px 20px;text-align:center;font-family:Roboto,sans-serif"><h2 style="color:var(--red);margin-bottom:12px">Error</h2><p style="color:var(--dim);font-size:14px;margin-bottom:16px;word-break:break-all">' + esc(state._loadError) + '</p><button class="btn btn-confirm" data-action="retry-load">Retry</button> <button class="btn btn-cancel" data-action="signout">Sign Out</button></div>';
     return;
   }
-  if (state.player) { renderPlayer(); return; }
+  if (state.player && !state.miniPlayer) { renderPlayer(); return; }
   if (state.viewingPlaylist) { app.innerHTML = renderPlaylistView(); return; }
   if (state.browsingChannel) { app.innerHTML = renderChannelBrowse(); return; }
 
@@ -691,6 +719,8 @@ function renderSubs() {
 function renderChannelBrowse() {
   var ch = state.browsingChannel;
   var h = '<div class="top-bar"><button class="icon-btn" data-action="back-browse">' + I.back + '</button><div style="flex:1;font-size:16px;font-weight:600">' + esc(ch.name) + '</div></div>';
+  h += '<div style="padding:6px 12px;background:rgba(255,180,0,.06);border-bottom:1px solid rgba(255,180,0,.15)">' +
+    '<p style="font-size:11px;color:rgba(210,160,60,1);line-height:1.4">Members-only videos cannot be listed via YouTube\'s public API, even for paid subscribers. Use the YouTube app to access exclusive content.</p></div>';
   h += '<div class="feed-grid">';
   if (state.browsingChannelVideos.length) h += state.browsingChannelVideos.map(videoCard).join('');
   else if (state.browsingLoading) h += '<div class="loading" style="grid-column:1/-1"><div class="spinner"></div> Loading...</div>';
@@ -703,24 +733,79 @@ function renderChannelBrowse() {
   return h;
 }
 
-// -- Player (renders once, then targeted updates only) --
+// -- Player (iframe is moved via DOM, never recreated, to preserve playback) --
 function renderPlayer() {
   var app = $('#app');
   var v = state.player, vid = v.id || v.videoId;
   var cc = state.captions ? 1 : 0;
 
-  // Build full player HTML with stable iframe
   var h = '<div class="player-view">' +
-    '<div class="player-header"><button class="icon-btn" data-action="close-player">' + I.back + '</button>' +
-    '<div style="flex:1;font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(v.channel) + '</div></div>' +
-    '<div class="player-embed">' +
-      '<iframe id="ytplayer" src="https://www.youtube.com/embed/' + vid + '?rel=0&modestbranding=1&cc_load_policy=' + cc + '&playsinline=1&autoplay=1&enablejsapi=1&origin=' + encodeURIComponent(window.location.origin) + '" allow="autoplay; picture-in-picture; encrypted-media; fullscreen" allowfullscreen></iframe>' +
+    '<div class="player-header">' +
+    '<button class="icon-btn" data-action="close-player">' + I.back + '</button>' +
+    '<div style="flex:1;font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(v.channel) + '</div>' +
+    '<button class="icon-btn" data-action="minimize-player" title="Miniplayer">' + I.miniplayer + '</button>' +
     '</div>' +
+    '<div class="player-embed" id="playerEmbed"></div>' +
     '<div id="playerControlsArea">' + buildPlayerControlsHTML() + '</div>' +
     '</div>';
 
   app.innerHTML = h;
+
+  // Move or create the iframe — DOM move preserves video playback position
+  var iframe = _getOrCreateIframe(vid, cc);
+  var embedSlot = document.getElementById('playerEmbed');
+  if (embedSlot) embedSlot.appendChild(iframe);
+
   state._playerRendered = true;
+}
+
+function _getOrCreateIframe(vid, cc) {
+  if (_playerIframe && _playerIframe.dataset.vid === vid) return _playerIframe;
+  var iframe = document.createElement('iframe');
+  iframe.id = 'ytplayer';
+  iframe.dataset.vid = vid;
+  iframe.setAttribute('allow', 'autoplay; picture-in-picture; encrypted-media; fullscreen');
+  iframe.setAttribute('allowfullscreen', '');
+  iframe.src = 'https://www.youtube.com/embed/' + vid +
+    '?rel=0&modestbranding=1&cc_load_policy=' + cc +
+    '&playsinline=1&autoplay=1&enablejsapi=1&origin=' +
+    encodeURIComponent(window.location.origin);
+  _playerIframe = iframe;
+  return iframe;
+}
+
+function minimizePlayer() {
+  if (!state.player || !_playerIframe) return;
+  state.miniPlayer = true;
+  var slot = document.getElementById('mini-iframe-slot');
+  var bar = document.getElementById('mini-bar');
+  if (slot) slot.appendChild(_playerIframe);
+  if (bar) bar.innerHTML =
+    '<span class="mini-title">' + esc(state.player.title) + '</span>' +
+    '<button class="icon-btn small" data-action="expand-player" title="Expand">' + I.expand + '</button>' +
+    '<button class="icon-btn small" data-action="close-mini-player" title="Close">' + I.x + '</button>';
+  var mini = document.getElementById('miniplayer');
+  if (mini) mini.style.display = 'block';
+  render();
+}
+
+function expandMiniPlayer() {
+  if (!state.player) return;
+  state.miniPlayer = false;
+  var mini = document.getElementById('miniplayer');
+  if (mini) mini.style.display = 'none';
+  render(); // calls renderPlayer() which moves iframe from mini slot back to #playerEmbed
+}
+
+function closeMiniPlayer() {
+  var slot = document.getElementById('mini-iframe-slot');
+  if (slot && _playerIframe && slot.contains(_playerIframe)) slot.removeChild(_playerIframe);
+  _playerIframe = null;
+  state.miniPlayer = false;
+  state.player = null;
+  var mini = document.getElementById('miniplayer');
+  if (mini) mini.style.display = 'none';
+  render();
 }
 
 function buildPlayerControlsHTML() {
