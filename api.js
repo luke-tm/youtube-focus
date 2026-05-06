@@ -46,7 +46,7 @@ var YT_API = {
       throw new Error((err && err.error && err.error.message) || 'API error: ' + resp.status);
     }
 
-    var data = method === 'DELETE' ? null : await resp.json();
+    var data = (method === 'DELETE' || resp.status === 204) ? null : await resp.json();
     if (method === 'GET' && data) this._cache.set(this._cacheKey(endpoint, params), { data: data, time: Date.now() });
     return data;
   },
